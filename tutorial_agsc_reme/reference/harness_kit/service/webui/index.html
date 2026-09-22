@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>harness-kit 调试台</title>
+<!--
+  单文件 Web UI（契约 §二：harness_kit/service/webui/index.html）。
+
+  设计上的三个克制：
+  1. 不引任何 CDN / 前端框架。教程运行在离线环境里，一个外链就能让整页白屏；
+     而且这一页要读的是"事件流长什么样"，用原生 DOM 反而更直白。
+  2. SSE 用 fetch + ReadableStream 手解帧，而不是 EventSource —— EventSource
+     只能发 GET，没法带 JSON 请求体（POST /chat 的入参是 JSON）。
+     帧格式与后端 harness_kit/service/app.py 的 sse_frame() 严格对应：
+         data: {json}\n\n   普通帧
+         :\n\n              心跳
+         data: [DONE]\n\n   结束哨兵
+  3. 面板四块：会话列表 / 对话 / 事件流 / trace。事件流面板是重点 ——
+     第 20 讲要讲的"运营层"就是"看得见 Agent 每一步在干什么"。
+-->
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2b3038; --fg: #e6e8ec;
+    --dim: #949aa6; --accent: #6ea8fe; --ok: #4ade80; --warn: #fbbf24; --err: #f87171;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+           border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .spacer { flex: 1; }
+  .pill { font: 12px var(--mono); padding: 2px 8px; border-radius: 999px;
+          border: 1px solid var(--line); color: var(--dim); }
+  .pill.ok { color: var(--ok); border-color: #24492f; }
+  .pill.bad { color: var(--err); border-color: #4a2626; }
+  button { background: #2a2f38; color: var(--fg); border: 1px solid var(--line);
+           border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  main { display: grid; grid-template-columns: 240px 1fr 360px; height: calc(100vh - 49px); }
+  .col { border-right: 1px solid var(--line); display: flex; flex-direction: column;
+         min-height: 0; }
+  .col:last-child { border-right: none; }
+  .colhead { padding: 8px 12px; font-size: 12px; color: var(--dim);
+             border-bottom: 1px solid var(--line); text-transform: uppercase;
+             letter-spacing: .08em; }
+  .scroll { overflow: auto; flex: 1; min-height: 0; padding: 8px; }
+  .sess { padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px;
+          border: 1px solid transparent; }
+  .sess:hover { background: #22262e; }
+  .sess.active { background: #22262e; border-color: var(--accent); }
+  .sess .sid { font: 12px var(--mono); }
+  .sess .meta { font-size: 11px; color: var(--dim); }
+  .msg { margin: 0 0 12px; display: flex; gap: 10px; }
+  .msg .who { width: 56px; flex: none; font-size: 11px; color: var(--dim); padding-top: 4px;
+              text-align: right; }
+  .msg .body { flex: 1; white-space: pre-wrap; word-break: break-word;
+               background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; padding: 8px 12px; }
+  .msg.user .body { background: #1d2733; border-color: #2c3f57; }
+  .msg.err .body { border-color: #4a2626; color: var(--err); }
+  .composer { border-top: 1px solid var(--line); padding: 10px; display: flex; gap: 8px; }
+  .composer textarea { flex: 1; resize: none; height: 64px; background: #101216;
+                       color: var(--fg); border: 1px solid var(--line); border-radius: 6px;
+                       padding: 8px; font: 13px var(--mono); }
+  table.ev { width: 100%; border-collapse: collapse; font: 11px var(--mono); }
+  table.ev td { padding: 3px 6px; border-bottom: 1px solid #22262e; vertical-align: top; }
+  table.ev td.seq { color: var(--dim); width: 34px; text-align: right; }
+  table.ev td.kind { width: 96px; }
+  .k-reply_start { color: var(--accent); } .k-reply_end { color: var(--ok); }
+  .k-tool_call, .k-tool_result { color: var(--warn); }
+  .k-permission { color: var(--err); }
+  .payload { color: var(--dim); word-break: break-all; }
+  .empty { color: var(--dim); font-size: 12px; padding: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>harness-kit 调试台</h1>
+  <span class="pill" id="health">健康检查…</span>
+  <span class="pill" id="sess-info">未选会话</span>
+  <span class="spacer"></span>
+  <button id="btn-new">新建会话</button>
+  <button id="btn-refresh">刷新</button>
+  <button id="btn-metrics">指标</button>
+</header>
+<main>
+  <section class="col">
+    <div class="colhead">会话</div>
+    <div class="scroll" id="sessions"><div class="empty">加载中…</div></div>
+  </section>
+  <section class="col">
+    <div class="colhead">对话</div>
+    <div class="scroll" id="chat"><div class="empty">选中或新建一个会话后开始对话。</div></div>
+    <div class="composer">
+      <textarea id="input" placeholder="输入问题，Ctrl/Cmd + Enter 发送"></textarea>
+      <button id="btn-send">发送</button>
+    </div>
+  </section>
+  <section class="col">
+    <div class="colhead">事件流（可观测性的主战场）</div>
+    <div class="scroll" id="events"><div class="empty">—</div></div>
+  </section>
+</main>
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  let sessionId = null;
+  let busy = false;
+
+  // ---------- 工具 ----------
+  const el = (tag, cls, text) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+
+  async function getJSON(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(url + " -> " + res.status + " " + (await res.text()).slice(0, 200));
+    return await res.json();
+  }
+
+  function bump(node, cls, text) {
+    node.textContent = text;
+    node.className = cls;
+  }
+
+  // ---------- 健康检查 ----------
+  async function loadHealth() {
+    try {
+      const h = await getJSON("/healthz");
+      bump($("health"),
+           h.llm_configured ? "pill ok" : "pill bad",
+           h.status + " · " + h.profile + " · " + h.model + (h.llm_configured ? "" : " · 无凭据"));
+    } catch (err) {
+      bump($("health"), "pill bad", "不可达");
+    }
+  }
+
+  // ---------- 会话列表 ----------
+  async function loadSessions() {
+    const box = $("sessions");
+    box.innerHTML = "";
+    let data;
+    try {
+      data = await getJSON("/sessions");
+    } catch (err) {
+      box.appendChild(el("div", "empty", "加载失败: " + err.message));
+      return;
+    }
+    if (!data.sessions.length) {
+      box.appendChild(el("div", "empty", "还没有会话。点右上角「新建会话」。"));
+      return;
+    }
+    for (const s of data.sessions) {
+      const row = el("div", "sess" + (s.session_id === sessionId ? " active" : ""));
+      row.appendChild(el("div", "sid", s.session_id));
+      row.appendChild(el("div", "meta",
+        s.profile_name + " · " + s.event_count + " 事件" + (s.active ? " · 活跃" : "")));
+      row.onclick = () => selectSession(s.session_id);
+      box.appendChild(row);
+    }
+  }
+
+  // ---------- 事件流 ----------
+  const KIND_CLASS = {
+    reply_start: "k-reply_start", reply_end: "k-reply_end",
+    tool_call: "k-tool_call", tool_result: "k-tool_result",
+    permission: "k-permission",
+  };
+
+  async function loadDetail(id) {
+    let detail;
+    try {
+      detail = await getJSON("/sessions/" + encodeURIComponent(id) + "?event_limit=400");
+    } catch (err) {
+      $("events").innerHTML = "";
+      $("events").appendChild(el("div", "empty", "详情加载失败: " + err.message));
+      return;
+    }
+    renderEvents(detail.events);
+    renderTurns(detail.turns);
+    bump($("sess-info"), "pill", id + " · " + detail.meta.profile_name + " · " + detail.event_total + " 事件");
+  }
+
+  function renderEvents(events) {
+    const box = $("events");
+    box.innerHTML = "";
+    if (!events.length) { box.appendChild(el("div", "empty", "无事件")); return; }
+    const table = el("table", "ev");
+    for (const ev of events.slice().reverse()) {
+      const tr = el("tr");
+      tr.appendChild(el("td", "seq", String(ev.seq)));
+      tr.appendChild(el("td", "kind " + (KIND_CLASS[ev.kind] || ""), ev.kind));
+      tr.appendChild(el("td", "payload", JSON.stringify(ev.payload)));
+      table.appendChild(tr);
+    }
+    box.appendChild(table);
+  }
+
+  function renderTurns(turns) {
+    const box = $("chat");
+    if (box.dataset.rendered) return;   // 已有实时对话内容时不覆盖
+    box.innerHTML = "";
+    if (!turns.length) { box.appendChild(el("div", "empty", "这个会话还没有完成的回合。")); return; }
+    for (const t of turns) {
+      const m = el("div", "msg user");
+      m.appendChild(el("div", "who", "turn " + t.start_seq));
+      const body = el("div", "body");
+      body.textContent = t.input_preview + "\n\n[工具] " + (t.tool_calls.join(", ") || "无")
+        + "\n[轮数] " + t.iterations + " · [token] " + t.token_usage.total_tokens;
+      m.appendChild(body);
+      box.appendChild(m);
+    }
+  }
+
+  function appendMsg(who, cls) {
+    const m = el("div", "msg " + cls);
+    m.appendChild(el("div", "who", who));
+    const body = el("div", "body", "");
+    m.appendChild(body);
+    $("chat").appendChild(m);
+    $("chat").scrollTop = $("chat").scrollHeight;
+    return body;
+  }
+
+  // ---------- 发送（SSE） ----------
+  async function send() {
+    if (busy) return;
+    const text = $("input").value.trim();
+    if (!text) return;
+    $("input").value = "";
+    const userBody = appendMsg("我", "user");
+    userBody.textContent = text;
+    const replyBody = appendMsg("Agent", "assistant");
+    busy = true; $("btn-send").disabled = true;
+    const $chat = $("chat"); $chat.dataset.rendered = "1";
+
+    try {
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text, session_id: sessionId, stream: true }),
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status + " " + (await res.text()).slice(0, 300));
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let cut;
+        while ((cut = buffer.indexOf("\n\n")) >= 0) {
+          const raw = buffer.slice(0, cut); buffer = buffer.slice(cut + 2);
+          if (!raw.startsWith("data: ")) continue;              // ": 心跳" 走这里
+          const payload = raw.slice(6);
+          if (payload === "[DONE]") continue;
+          let frame; try { frame = JSON.parse(payload); } catch (e) { continue; }
+          handleFrame(frame, replyBody);
+        }
+      }
+    } catch (err) {
+      replyBody.parentElement.className = "msg err";
+      replyBody.textContent = "请求失败: " + err.message;
+    } finally {
+      busy = false; $("btn-send").disabled = false;
+      if (sessionId) loadDetail(sessionId);
+    }
+  }
+
+  function handleFrame(frame, replyBody) {
+    const d = frame.data || {};
+    if (frame.event === "session") {
+      if (d.session_id && d.session_id !== sessionId) { sessionId = d.session_id; loadSessions(); }
+      return;
+    }
+    if (frame.event === "TEXT_BLOCK_DELTA") { replyBody.textContent += d.delta || ""; return; }
+    if (frame.event === "TOOL_CALL_START") {
+      replyBody.textContent += "\n\n[调用工具] " + (d.tool_call_name || "?") + " …";
+      return;
+    }
+    if (frame.event === "TOOL_RESULT_END") {
+      replyBody.textContent += " [" + (d.state || "?") + "]";
+      return;
+    }
+    if (frame.event === "final") {
+      replyBody.textContent += "\n\n—— " + d.latency_ms + "ms · in/out " +
+        d.input_tokens + "/" + d.output_tokens + " token · " + d.tool_calls + " 次工具调用";
+      return;
+    }
+    if (frame.event === "error") {
+      replyBody.parentElement.className = "msg err";
+      replyBody.textContent += "\n\n[错误] " + (d.type || "") + ": " + (d.message || "");
+    }
+  }
+
+  // ---------- 动作 ----------
+  async function newSession() {
+    const res = await fetch("/sessions", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    });
+    const data = await res.json();
+    if (!res.ok) { alert("新建失败: " + JSON.stringify(data)); return; }
+    sessionId = data.session_id;
+    $("chat").innerHTML = ""; $("chat").dataset.rendered = "";
+    $("chat").appendChild(el("div", "empty", "新会话 " + sessionId + "，开始问吧。"));
+    await loadSessions();
+  }
+
+  async function selectSession(id) {
+    sessionId = id;
+    $("chat").innerHTML = ""; $("chat").dataset.rendered = "";
+    await loadSessions();
+    await loadDetail(id);
+  }
+
+  async function showMetrics() {
+    const res = await fetch("/metrics");
+    const text = await res.text();
+    const w = window.open("", "_blank");
+    if (!w) { console.log(text); return; }
+    w.document.title = "harness-kit /metrics";
+    const pre = w.document.createElement("pre");
+    pre.textContent = text;
+    w.document.body.appendChild(pre);
+    w.document.body.style.cssText = "background:#14161a;color:#e6e8ec;font:12px ui-monospace,monospace;padding:12px";
+  }
+
+  $("btn-new").onclick = newSession;
+  $("btn-refresh").onclick = () => { loadSessions(); if (sessionId) loadDetail(sessionId); };
+  $("btn-metrics").onclick = showMetrics;
+  $("btn-send").onclick = send;
+  $("input").addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); send(); }
+  });
+
+  loadHealth(); loadSessions();
+})();
+</script>
+</body>
+</html>

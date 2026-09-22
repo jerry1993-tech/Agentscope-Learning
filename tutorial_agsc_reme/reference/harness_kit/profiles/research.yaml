@@ -1,0 +1,58 @@
+# 研究助手 Profile（契约 §6.3 逐字给出）。
+#
+# 两处必须知道的点：
+#
+# 一、契约正文里 sys_prompt 写成「找不到出处就写"无来源"」—— 中文双引号嵌在
+#     YAML 双引号字符串里是非法的，契约自己也标注了这一点。这里改用中文书名号
+#     「无来源」，语义完全一致。
+#
+# 二、workspace.kind 是 docker / policy.network 是 allowlist。这条 Profile 要求
+#     本机有可用的 Docker daemon：builder 的选型策略是「配了 policy 就优先用
+#     policy_local / quota_docker，不可用时退回 AgentScope 原生实现并打 warning」
+#     （harness_kit/config/builder.py 的 build_workspace）。所以在没有 Docker 的
+#     机器上它是**能装起来但策略不生效**的 —— 要做可跑通的端到端验证请用
+#     researcher_with_memory.yaml（同场景、本地工作区）。
+name: research
+description: 研究助手：高向量权重混合检索、强制引用、只读沙箱、Docker 配额。
+extends: default
+model:
+  temperature: 0.2
+workspace:
+  kind: docker
+  root: ./.harness/workspace/research
+  policy:
+    read_paths: ["./docs"]
+    write_paths: []
+    deny_paths: [".git/", ".env"]
+    network: allowlist
+    network_allowlist: ["pypi.org", "raw.githubusercontent.com"]
+    cpu: 1.0
+    memory_mb: 2048
+    pids: 128
+    timeout_s: 120
+memory:
+  enabled: true
+  workspace_root: ./.harness/reme/research
+  catalog: research
+  mode: both
+  top_k: 8
+  min_score: 0.05
+  inject_budget_tokens: 2000
+  jobs: [search, node_search, auto_memory]
+permission:
+  mode: explore
+  rule_files: ["./harness_kit/permission/rules/research.yaml"]
+agent:
+  name: research-agent
+  sys_prompt: "你是研究员。每个结论都必须给出可核查的引用；找不到出处就写「无来源」。"
+  max_iters: 40
+# 契约 §6.3 没有列 middleware 段 —— 但 config/schema.py 的 `middleware` 是
+# **列表替换**语义，不写这一段就会继承 default.yaml 的 [logging]，于是 memory
+# 块无人消费（同 researcher_with_memory.yaml 的说明）。这里补上 reme_memory，
+# 让这份 Profile 与契约的 memory 声明自洽。
+middleware:
+  - name: logging
+    params: { level: INFO }
+  - name: reme_memory
+    params:
+      workspace_dir: ./.harness/reme/research

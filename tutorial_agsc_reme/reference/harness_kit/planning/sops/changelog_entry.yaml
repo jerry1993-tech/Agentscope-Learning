@@ -1,0 +1,39 @@
+# `harness_kit/planning/sops/` —— SOP（标准作业程序）定义目录
+#
+# 为什么这里有一个目录：AgentScope 的 `SOP` 只能写在 Python 里
+# （`SOP(name, steps)` 要求 `steps` 是 `SOPStepBase` 实例列表，
+# 见 third_party/agentscope/src/agentscope/sop/_schema.py:415），
+# 于是「换一条流程」= 改代码 + 重新部署。
+# `harness_kit.planning.sop.HarnessSOP` 把定义搬到 YAML：这一层补的就是
+# 「流程可配置」这一件事，状态机本身仍然跑在 AgentScope 的 `SOPEngine` 上。
+#
+# 契约 §二 的目录树里没有这个子目录（契约只列了 planning/ 下的四个 .py）。
+# 这是与契约的一处**有意偏离**，理由与第 11 讲新增
+# `harness_kit/permission/rules/` 完全相同：没有一份真实的定义文件，
+# 「YAML → SOP」这条路径就没有可运行的真值。
+
+name: changelog_entry
+description: "给一个已合并的改动写出一条可发布的 CHANGELOG 条目（当前目标版本 ${SOP_TARGET_VERSION:-v0.1.0}）。"
+
+# steps 里每一项对应 SOPStepSpec（harness_kit/planning/sop.py:62）：
+#   subject       短标题，进 SOP_STEP_STARTED 事件
+#   description   这一步必须达成什么 —— 是目的地，不是路线
+#   max_attempts  被拒几次后放弃这一步（由 SOPEngine 强制，步骤自己不判断）
+#   verify        是否给这一步配验证者；false → SOPStep(verifier=None)，
+#                 即「做完就算过」（sop/_schema.py:291）
+steps:
+  - subject: gather_facts
+    description: >-
+      列出这次改动的客观事实：受影响的模块名、改动的用户可见行为
+      （新增 / 变更 / 修复 / 移除）、以及一条能复现验证的命令。
+      不要写评价，只写事实。
+    max_attempts: 2
+    verify: false
+
+  - subject: write_entry
+    description: >-
+      把上一步的事实写成一条符合 Keep a Changelog 规范的条目：
+      一行标题（含变更类型前缀）+ 一句面向使用者的影响说明
+      （「升级后我要不要改代码」）+ 一条验证命令。
+    max_attempts: 2
+    verify: false

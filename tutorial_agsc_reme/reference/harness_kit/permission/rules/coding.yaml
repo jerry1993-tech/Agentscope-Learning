@@ -1,0 +1,64 @@
+# 编码场景的权限规则（被 harness_kit/profiles/coding-assistant.yaml 引用）
+#
+# 设计意图：让"读"完全无摩擦，让"写危险文件"和"跑危险命令"彻底不可能，
+# 其余一律问人。配合 PermissionMode.ACCEPT_EDITS 使用时，工作区内的写由
+# AgentScope 自己的工作目录判定自动放行（tool/_builtin/_write.py:150），
+# 因此这里**不需要**再为工作区写 allow 规则 —— 那种 glob 规则因为只对
+# tool_input 的原始字符串做 fnmatch（tool/_builtin/_write.py:194），
+# 在 agent 传相对路径时根本匹配不上。
+#
+# 引擎的桶间优先级是恒定的 DENY > ASK > ALLOW
+# （third_party/agentscope/src/agentscope/permission/_engine.py:117 的
+#  _check_default 第 1/2/5 步），与书写顺序无关。因此下面
+# "git push --force 拒绝" 与 "git push:* 询问" 并存时，--force 一定被拒。
+order: 10
+default_behavior: ask
+
+rules:
+  # ---- 读：全部放行 --------------------------------------------------
+  - tool: "Read"
+    behavior: allow
+  - tool: "Glob"
+    behavior: allow
+  - tool: "Grep"
+    behavior: allow
+
+  # ---- 机密文件：写入直接拒绝（不是询问）-----------------------------
+  # 用 deny 而不是 ask：没人应该在交互里被问"要不要把密钥写进日志"。
+  - tool: "Write"
+    behavior: deny
+    deny_paths: [".env", "*.env", "**/.env", "*.pem", "**/*.pem", "**/id_rsa"]
+  - tool: "Edit"
+    behavior: deny
+    deny_paths: [".env", "*.env", "**/.env", "*.pem", "**/*.pem", "**/id_rsa"]
+
+  # ---- 危险命令：拒绝 -------------------------------------------------
+  # Bash 的匹配语义是"命令的子串"（pattern 里不含 * 时走 substring，
+  # third_party/agentscope/src/agentscope/tool/_builtin/_bash.py:443），
+  # 所以 "rm -rf /" 能命中任何包含它的命令。
+  - tool: "Bash"
+    behavior: deny
+    deny_patterns:
+      - "rm -rf /"
+      - "git push --force"
+      - "git reset --hard"
+      - "chmod 777"
+      - "curl * | sh"
+      - "wget * | sh"
+
+  # ---- 改变环境的命令：询问 -------------------------------------------
+  # "git push:*" 是**前缀模式**（以 :* 结尾），匹配 "git push" 与 "git push origin main"
+  # （third_party/agentscope/src/agentscope/tool/_builtin/_bash.py:426）。
+  - tool: "Bash"
+    behavior: ask
+    ask_patterns:
+      - "git push:*"
+      - "pip install:*"
+      - "npm install:*"
+      - "docker run:*"
+
+  # ---- 纯计算工具：放行 -----------------------------------------------
+  - tool: "Now"
+    behavior: allow
+  - tool: "Calc"
+    behavior: allow

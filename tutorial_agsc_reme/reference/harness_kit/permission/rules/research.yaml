@@ -1,0 +1,49 @@
+# 研究场景的权限规则（被 harness_kit/profiles/research-analyst.yaml 引用）
+#
+# 设计意图：这是一个"读多写少、且几乎没有理由改文件"的助手。
+# 读完全放行，写一律询问（而不是拒绝：研究报告偶尔需要落一份笔记），
+# 所有会改动环境或把外部内容拉进来的命令都要人点头。
+#
+# order=20 比 coding.yaml 的 10 大：两个文件同时装载时，
+# coding.yaml 的规则先被匹配（RuleSet.merge 取 order 小者优先，
+# harness_kit/permission/rules.py:390）。
+order: 20
+default_behavior: ask
+
+rules:
+  # ---- 读：全部放行 --------------------------------------------------
+  - tool: "Read"
+    behavior: allow
+  - tool: "Glob"
+    behavior: allow
+  - tool: "Grep"
+    behavior: allow
+
+  # ---- 写：一律询问 ---------------------------------------------------
+  # 不限定路径：写到哪里都要人确认，因为研究场景里"写文件"本身就是异常信号。
+  - tool: "Write"
+    behavior: ask
+  - tool: "Edit"
+    behavior: ask
+
+  # ---- 命令：默认询问（不写模式即为该工具的全部调用）------------------
+  - tool: "Bash"
+    behavior: ask
+
+  # ---- 明显危险/破坏性的命令：直接拒绝 --------------------------------
+  # DENY 桶在 ASK 桶之前被检查，因此上面那条"Bash 全部询问"不会救下这些命令。
+  - tool: "Bash"
+    behavior: deny
+    deny_patterns:
+      - "rm -rf /"
+      - "git push --force"
+      - "curl * | sh"
+      - "wget * | sh"
+      - "sudo "
+      - "mkfs"
+
+  # ---- 纯计算工具：放行 -----------------------------------------------
+  - tool: "Now"
+    behavior: allow
+  - tool: "Calc"
+    behavior: allow

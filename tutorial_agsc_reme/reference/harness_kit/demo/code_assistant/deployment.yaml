@@ -1,0 +1,241 @@
+# 代码助手 Demo 的部署清单（第 20 讲）。
+#
+#     kubectl apply -f tutorial_agsc_reme/reference/harness_kit/demo/code_assistant/deployment.yaml
+#
+# 三个对象的分工：
+#
+#   Job        一次性把代码库灌进 ReMe 索引（写入侧）；跑完即退出，可重复执行
+#   Deployment 常驻服务（第 20 讲的 service/app.py），跑 SSE 对话 / 会话查询 / metrics
+#   Service    ClusterIP，把 18420 暴露给集群内其它服务
+#
+# **为什么 replicas 必须是 1**：会话状态（`ChatService` 里活着的 Agent）在进程内，
+# 会话事件按 session 分文件写在共享卷上。多副本会各写各的、请求也会漂移，
+# 看起来"能跑"但会话会随机错乱 —— 要横向扩展得先把会话存储换成带一致性的后端
+# （第 9 讲的 SessionStoreBase 就是为此留的接口），那是另一件事，不在本清单里。
+#
+# 密钥不进清单：`harness-kit-secrets` 的 stringData 是占位值，请用
+# `kubectl create secret generic harness-kit-secrets --from-literal=...` 覆盖。
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: harness-kit-state
+  labels:
+    app.kubernetes.io/name: harness-kit-code-assistant
+    app.kubernetes.io/component: state
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harness-kit-config
+  labels:
+    app.kubernetes.io/name: harness-kit-code-assistant
+data:
+  # 镜像里的目录结构：/app/third_party/{agentscope,ReMe} + /app/tutorial_agsc_reme/reference
+  HARNESS_REPO_ROOT: "/app/tutorial_agsc_reme/reference"
+  PYTHONPATH: "/app/third_party/ReMe:/app/tutorial_agsc_reme/reference"
+  # 两个变量都要给，它们喂的是两条不同的路：
+  #   LLM_MODEL              → Profile 的 `${LLM_MODEL:-deepseek-chat}` 插值
+  #                            （harness_kit/config/loader.py:227 直接读 os.environ，
+  #                             这条路上 HARNESS_ 前缀的名字**不生效**）
+  #   HARNESS_LLM_MODEL_NAME → Settings.llm_model_name（settings.py 的 AliasChoices）
+  LLM_MODEL: "deepseek-flash"
+  HARNESS_LLM_MODEL_NAME: "deepseek-flash"
+  HARNESS_LOG_LEVEL: "INFO"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: harness-kit-secrets
+  labels:
+    app.kubernetes.io/name: harness-kit-code-assistant
+type: Opaque
+stringData:
+  # ↓↓↓ 占位值：部署前必须替换（或用 kubectl create secret 覆盖）↓↓↓
+  HARNESS_LLM_API_KEY: "REPLACE_ME"
+  HARNESS_LLM_BASE_URL: "REPLACE_ME"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: harness-kit-index
+  labels:
+    app.kubernetes.io/name: harness-kit-code-assistant
+    app.kubernetes.io/component: index
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: harness-kit-code-assistant
+        app.kubernetes.io/component: index
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: ingest
+          image: harness-kit-code-assistant:0.1.0
+          imagePullPolicy: IfNotPresent
+          # 幂等：重复执行同一条命令只会得到「未变」，不会重复写 chunk
+          # （入库按内容 sha256 比对，见 harness_kit/memory/ingest.py）。
+          args:
+            - python
+            - -m
+            - harness_kit.demo.code_assistant.ingest_repo
+            - --target
+            - /app/third_party/agentscope/src/agentscope/agent
+            - --index
+            - /app/tutorial_agsc_reme/reference/.harness/reme/code_assistant
+            - --alias
+            - agentscope
+            - --limit
+            - "24"
+            - --json
+          envFrom:
+            - configMapRef:
+                name: harness-kit-config
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harness-kit-secrets
+                  key: HARNESS_LLM_API_KEY
+            - name: OPENAI_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: harness-kit-secrets
+                  key: HARNESS_LLM_BASE_URL
+          volumeMounts:
+            # 挂到 .harness 这一层：索引（reme/）、工作区（workspace/）、
+            # 会话（sessions/）都在里面，与 harness_kit 的既有路径约定一致。
+            - name: state
+              mountPath: /app/tutorial_agsc_reme/reference/.harness
+          resources:
+            requests:
+              cpu: "200m"
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: harness-kit-state
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harness-kit-service
+  labels:
+    app.kubernetes.io/name: harness-kit-code-assistant
+    app.kubernetes.io/component: service
+spec:
+  replicas: 1 # 见文件头：会话状态在进程内，不能多副本
+  strategy:
+    type: Recreate # 同一个 PVC 是 ReadWriteOnce，滚动更新会卡在卷争用上
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: harness-kit-code-assistant
+      app.kubernetes.io/component: service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: harness-kit-code-assistant
+        app.kubernetes.io/component: service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: service
+          image: harness-kit-code-assistant:0.1.0
+          imagePullPolicy: IfNotPresent
+          # 端口必须 ≥ 18000（契约铁律）；--host 0.0.0.0 不能省：
+          # CLI 默认绑 127.0.0.1，那样 Service 转发不进来。
+          args:
+            - python
+            - -m
+            - harness_kit.cli
+            - --profile
+            - researcher_with_memory
+            - serve
+            - --host
+            - 0.0.0.0
+            - --port
+            - "18420"
+          ports:
+            - name: http
+              containerPort: 18420
+          envFrom:
+            - configMapRef:
+                name: harness-kit-config
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: harness-kit-secrets
+                  key: HARNESS_LLM_API_KEY
+            - name: OPENAI_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: harness-kit-secrets
+                  key: HARNESS_LLM_BASE_URL
+          volumeMounts:
+            - name: state
+              mountPath: /app/tutorial_agsc_reme/reference/.harness
+          # /healthz 是 service/app.py 里真实存在的路由，返回 profile / model /
+          # active_sessions 等，能反映"装配成功了没有"，比只探端口有用。
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: harness-kit-state
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: harness-kit-service
+  labels:
+    app.kubernetes.io/name: harness-kit-code-assistant
+    app.kubernetes.io/component: service
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: harness-kit-code-assistant
+    app.kubernetes.io/component: service
+  ports:
+    - name: http
+      port: 18420
+      targetPort: http
+      protocol: TCP

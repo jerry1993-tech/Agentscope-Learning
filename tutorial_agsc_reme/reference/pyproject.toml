@@ -1,0 +1,72 @@
+# harness_kit 参考实现的依赖声明与工具配置。
+#
+# 设计原则（对应契约第七章「编码规范」第 6 条）：这里只声明**已经在本环境装好**的
+# 依赖，不引入任何需要额外安装的新库。版本号写成「==」而不是「>=」，因为整套教程的
+# 每一个 `路径:行号` 都是针对这两个确切版本核实过的。
+#
+# 注意：`agentscope` 与 `reme` 在本环境里一个是 `pip install -e`（源码在
+# `third_party/agentscope/src/`），一个是 **不安装、只靠 PYTHONPATH** 引入
+# （`third_party/ReMe`）。所以它们写在 `dependencies` 里只是为了记录版本契约，
+# 实际验证时永远走 PYTHONPATH，而不是靠 pip 解析。
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness-kit"
+version = "0.1.0"
+description = "建立在 AgentScope 2.0.8 与 ReMe 0.4.1.13 之上的企业级 Agent Harness 装配层"
+readme = "README.md"
+requires-python = "==3.11.*"
+
+dependencies = [
+    "agentscope==2.0.8",
+    "reme==0.4.1.13",
+    "pydantic>=2.13,<3",
+    "pydantic-settings>=2.15,<3",
+    "loguru>=0.7.3",
+    "numpy>=2.0",
+    "fastapi>=0.141",
+    "uvicorn>=0.53",
+    "mcp>=1.30",
+    "httpx>=0.28",
+    "pyyaml>=6.0",
+    "zstandard>=0.25",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+]
+
+[project.scripts]
+harness-kit = "harness_kit.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["harness_kit*"]
+
+# ---------------------------------------------------------------------------
+# pytest 配置
+# ---------------------------------------------------------------------------
+# 三个必设项：
+#
+# 1. `asyncio_mode = "auto"`：让 `async def test_xxx` 不用逐个挂
+#    `@pytest.mark.asyncio`。少了它，异步测试会被当作同步函数直接"通过"，
+#    是最危险的假绿。
+# 2. `asyncio_default_fixture_loop_scope = "function"`：不写这一条，pytest-asyncio
+#    会打 `PytestConfigWarning: Unknown config option`，并且 fixture 的事件循环
+#    作用域变成隐式行为（ReMe 的 `Application._start()` 会建 asyncio.Lock，
+#    跨事件循环复用会炸）。
+# 3. `-p no:cacheprovider` 通过 addopts 关掉，避免在只读目录里写 `.pytest_cache`。
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = ["-p", "no:cacheprovider", "-ra", "-q"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

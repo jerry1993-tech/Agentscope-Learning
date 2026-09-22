@@ -1,0 +1,36 @@
+# 只读代码助手 Profile（任务书要求的三个 Profile 之一，契约 §二 的目录树里没有它，
+# 这是**新增文件**，偏离已记在交付说明的 unresolved 里）。
+#
+# 存在的意义：权限是"能改什么"的开关，而最常用的一档是"一点都不许改"。
+# 这一档不做成"少给几个工具"（工具少了模型会反复试），而是靠权限引擎的
+# PermissionMode.EXPLORE（third_party/agentscope/src/agentscope/permission/_types.py:44）
+# —— 它的文档表明确定义为 read-only mode：
+#   Allow: Read / Grep / Glob 与只读 bash 命令（ls / git status 等）
+#   Deny : 一切修改类工具与命令
+# 注意 DENY / ASK 规则的优先级高于 EXPLORE 的自动放行，所以下面仍然挂
+# coding 规则文件，让 "读 .env 也要拦" 这类硬规则继续生效。
+#
+# enable_hitl: false 会被 builder 翻译成 PermissionMode.DONT_ASK
+# （见 harness_kit/config/schema.py:391 的 AgentSpec.enable_hitl 文档），
+# 于是"该问人的"一律变成"拒绝"而不是挂起 —— 只读助手可以无人值守地跑。
+name: readonly_coder
+description: 只读代码助手：仓库只读探索（EXPLORE 模式）+ 代码审查技能 + 无人值守。
+extends: coding
+tools:
+  packs: [builtin, repo]
+  disabled: []
+middleware:
+  - name: logging
+    params: { level: INFO }
+  - name: guards
+    params: { max_repeat_tool_calls: 3 }
+memory:
+  enabled: false
+permission:
+  mode: explore
+  rule_files: ["./harness_kit/permission/rules/coding.yaml"]
+agent:
+  name: readonly-coder
+  sys_prompt: "你是一名只读代码审阅者。你只能读代码，不能修改任何文件；请用引用（文件路径 + 行号）支撑你的每一条结论。"
+  max_iters: 25
+  enable_hitl: false

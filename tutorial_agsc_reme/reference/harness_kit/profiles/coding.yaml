@@ -1,0 +1,49 @@
+# 代码助手 Profile（契约 §6.3 逐字给出，两处按仓库实际情况微调，见下）。
+#
+# 一、middleware 是**整体替换**而不是追加（契约 §6.2 的 list-vs-list 规则）。
+#     所以这里写的 budget + guards 会把 default.yaml 的 logging 顶掉。
+#     想保留 logging 就用 `!append`：
+#         middleware: !append [{ name: budget, params: {...} }]
+#     这里保持契约原样（整体替换），是为了让教程能演示这条规则的真实后果。
+#
+# 二、契约写的 enabled: [code_review, repo_explore]，但
+#     harness_kit/skills/builtin/ 下实际只有 code_review 与 commit_convention
+#     （见该目录）。loader 的 strict_enabled 默认 False，未知名字只会打一条
+#     warning（harness_kit/skills/loader.py:115），不会报错；这里换成真实存在的
+#     commit_convention，让默认运行没有告警。
+name: coding
+description: 代码助手：仓库读写 + grep、代码审查技能、ReMe 长期记忆、token 预算中间件。
+extends: default
+tools:
+  packs: !append [repo]
+  disabled: []
+skills:
+  directories: ["./harness_kit/skills/builtin"]
+  enabled: [code_review, commit_convention]
+  scan_subdir: true
+  disclosure: index
+middleware:
+  - name: budget
+    params:
+      max_prompt_tokens: 60000
+      max_completion_tokens: 16000
+      max_tool_calls: 40
+      on_exceed: raise
+  - name: guards
+    params: { max_repeat_tool_calls: 3 }
+memory:
+  enabled: true
+  workspace_root: ./.harness/reme/coding
+  catalog: coding
+  mode: agent_control
+  top_k: 5
+  min_score: 0.2
+  inject_budget_tokens: 1200
+  jobs: [search, auto_memory]
+permission:
+  mode: accept_edits
+  rule_files: ["./harness_kit/permission/rules/coding.yaml"]
+agent:
+  name: coding-agent
+  sys_prompt: "你是一名资深工程师。改代码前先读代码；改完必须给出验证方式。"
+  max_iters: 30

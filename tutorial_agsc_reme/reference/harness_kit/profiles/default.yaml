@@ -1,0 +1,40 @@
+# 最小可运行 Profile（契约 §6.3 逐字给出，仅一处环境变量名按实际情况调整）：
+# 本地工作区、内置只读工具、无记忆、无沙箱策略。
+#
+# 环境变量名的偏离说明：契约写作 ${LLM_MODEL_NAME:-deepseek-chat}，但仓库根的
+# .env 里只有 LLM_MODEL=deepseek-flash（settings.py 的模块 docstring 也是这么
+# 指示的），而 Profile 的 ${} 插值走的是 os.environ（harness_kit/config/loader.py:227
+# 的 interpolate_env(raw, dict(os.environ))），所以这里用 ${LLM_MODEL}。
+# 想要回到契约写法，只需在 .env 里补一行 LLM_MODEL_NAME=<模型名>。
+name: default
+description: 最小可运行 Profile：本地工作区、只读工具、无记忆、无沙箱。
+model:
+  provider: deepseek
+  model_name: ${LLM_MODEL:-deepseek-chat}
+  api_key_env: LLM_API_KEY
+  base_url_env: LLM_BASE_URL
+  temperature: 0.0
+  stream: true
+tools:
+  packs: [builtin]
+  max_result_chars: 8000
+skills:
+  directories: []
+mcp:
+  servers: []
+middleware:
+  - name: logging
+    params: { level: INFO }
+workspace:
+  kind: local
+  root: ./.harness/workspace
+permission:
+  mode: default
+  rule_files: []
+  audit_path: ./.harness/audit.jsonl
+memory:
+  enabled: false
+agent:
+  name: default-agent
+  sys_prompt: "你是一个严谨的助手。回答前先确认事实，不确定就直说。"
+  max_iters: 20

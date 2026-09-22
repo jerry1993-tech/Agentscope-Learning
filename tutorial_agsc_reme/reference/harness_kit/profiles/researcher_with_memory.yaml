@@ -1,0 +1,65 @@
+# 带长期记忆的研究助手 Profile（任务书要求的三个 Profile 之一）。
+#
+# 与契约 §6.3 的 research.yaml 的关系：同场景，但**能在这台机器上真跑通**。
+# 两处必要的差异：
+#
+# 1. workspace.kind 用 local 而不是 docker。契约的 research.yaml 声明
+#    docker + network allowlist；在没有可用 Docker daemon 的机器上，
+#    builder 会退回 AgentScope 原生 workspace 并打 warning
+#    （harness_kit/config/builder.py 的 build_workspace），策略并不生效 ——
+#    一个"看起来安全其实没生效"的 Profile 比明说"我用本地工作区"更危险。
+#    要 Docker 配额请直接用 research.yaml。
+#
+# 2. 显式写出 memory 的每一项。memory.enabled 一旦为 true，builder 就会
+#    :meth:`HarnessMemoryConfig.from_spec` 去装配 ReMe（harness_kit/memory/config.py），
+#    这条路径**不会**因为 embedding_dimensions 为空而失败：不加 as_embedding
+#    组件时检索退化成纯关键词，合法表现是 metadata["counts"]["vector"] == 0
+#    （harness_kit/memory/config.py 的模块 docstring 第 3 条）。
+#    本仓库的 .env 只有 deepseek 的 OpenAI 兼容 key，没有 embedding 服务，
+#    所以这里**不配** embedding_dimensions —— 关键词检索 + 文件图足矣。
+name: researcher_with_memory
+description: 研究助手（可跑通版）：ReMe 长期记忆（关键词 + 文件图 / 标签索引）、强制引用、本地工作区、无人值守。
+extends: default
+model:
+  temperature: 0.2
+tools:
+  packs: [builtin]
+skills:
+  directories: ["./harness_kit/skills/builtin"]
+  enabled: [code_review]
+  scan_subdir: true
+  disclosure: index
+middleware:
+  - name: logging
+    params: { level: INFO }
+  - name: guards
+    params: { max_repeat_tool_calls: 3 }
+  # reme_memory 是"memory: 块"真正的消费者：没有它，下面的 memory 块只会被
+  # build_memory 建成一个 ReMe 客户端放进 BuiltHarness.memory，Agent 的中间件
+  # 链里没有任何东西去检索/注入（见 harness_kit/memory/middleware.py 的
+  # build_memory_middleware）。它的参数默认全部沿用 memory: 块，
+  # 这里只显式写 workspace_dir，是为了让"读写两侧指向同一个工作区"这件事
+  # 在 Profile 里一眼可见（写入侧见 harness_kit/memory/ingest.py）。
+  - name: reme_memory
+    params:
+      workspace_dir: ./.harness/reme/research
+workspace:
+  kind: local
+  root: ./.harness/workspace/research
+memory:
+  enabled: true
+  workspace_root: ./.harness/reme/research
+  catalog: research
+  mode: both
+  top_k: 8
+  min_score: 0.05
+  inject_budget_tokens: 2000
+  jobs: [search, node_search, auto_memory]
+permission:
+  mode: explore
+  rule_files: ["./harness_kit/permission/rules/research.yaml"]
+agent:
+  name: research-agent
+  sys_prompt: "你是研究员。每个结论都必须给出可核查的引用（写成 [1] [2] 这样的编号，并在末尾列出编号对应的来源路径）；找不到出处就写「无来源」。"
+  max_iters: 30
+  enable_hitl: false

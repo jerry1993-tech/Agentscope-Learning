@@ -24,9 +24,9 @@ Agent Harness 教程，外加一份与正文逐字对应、可直接跑通的参
 ## 环境（三步）
 
 ```bash
-# 1) 两个库：third_party/ 不入库，自行克隆（版本契约：agentscope 2.0.8 / reme 0.4.1.13）
-git clone https://github.com/agentscope-ai/agentscope.git third_party/agentscope
-git clone https://github.com/agentscope-ai/ReMe.git       third_party/ReMe
+# 1) 两个库：以子模块固定到本教程核实过的确切提交，一条命令拉齐
+git clone git@github.com:jerry1993-tech/Agentscope-Learning.git && cd Agentscope-Learning
+git submodule update --init            # third_party/agentscope + third_party/ReMe
 pip install -e third_party/agentscope
 
 # 2) 凭据：模板在 reference/，但要放到**仓库根**的 .env 里
@@ -36,6 +36,11 @@ cp tutorial_agsc_reme/reference/.env.example .env    # 然后填自己的 KEY
 export PYTHONPATH="$PWD/third_party/ReMe:$PWD/tutorial_agsc_reme/reference"
 python tutorial_agsc_reme/reference/scripts/00_smoke.py
 ```
+
+**版本钉死在哪**：`.gitmodules` 只记录上游 URL，具体版本由父仓库索引里的两个 gitlink 决定 ——
+`third_party/agentscope` → `5ff52f87`（`v2.0.8-47-g5ff52f87`）、
+`third_party/ReMe` → `873bcee2`（`v0.4.1.12-19-g873bcee2`）。
+教程正文里每一个 `路径:行号` 都是对这两个提交核实过的，换版本就会对不上号。
 
 <details>
 <summary>为什么 PYTHONPATH 这么写（最容易翻车的一处）</summary>

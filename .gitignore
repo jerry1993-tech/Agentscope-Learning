@@ -4,10 +4,15 @@
 *.env
 !.env.example
 
-# ── 第三方库：不入库 ─────────────────────────────────────────────
-# third_party/ 是 agentscope 与 ReMe 两个独立仓库的克隆（171MB，且自带 .git），
-# 按根 README 的「环境（三步）」自行克隆即可。
-third_party/
+# ── 第三方库：以「子模块指针」入库，源码本身不入库 ────────────────
+# third_party/ 下是两个上游仓库的克隆（171MB，自带 .git）。父仓库只记录
+# 两个子模块的 URL + 固定 SHA（见 .gitmodules），不复制它们的源码。
+# 注意：不能写成 `third_party/`（整目录被排除后无法再放行子路径），
+# 必须用 `third_party/*` + 逐条 `!` 放行。
+# 其余 third_party/ 内容（运行期产生的任何东西）仍不入库。
+third_party/*
+!third_party/agentscope
+!third_party/ReMe
 
 # ── 运行期产物 ──────────────────────────────────────────────────
 logs/

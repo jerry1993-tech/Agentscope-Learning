@@ -167,10 +167,15 @@ tutorial_agsc_reme/
 | conda 环境名 | `agentscope_reme_pip_env` |
 | AgentScope | **2.0.8**，`pip install -e third_party/agentscope`（源码在 `third_party/agentscope/src/agentscope/`），直接 `import` |
 | ReMe | **0.4.1.13**，克隆在 `third_party/ReMe/`，**不安装**，靠 `PYTHONPATH` 引入 |
+| 版本钉死 | 两个库以 **git 子模块**固定在 `third_party/`，`git submodule update --init` 拉到确切提交：`agentscope 5ff52f87`（`v2.0.8-47-g5ff52f87`）、`ReMe 873bcee2`（`v0.4.1.12-19-g873bcee2`） |
 
 > `pyproject.toml` 里的 `requires-python = "==3.11.*"` 与
 > `agentscope==2.0.8` / `reme==0.4.1.13` 是**版本契约**，不是给 pip 解析用的：
 > 教程里每一个 `路径:行号` 都是针对这两个确切版本核实过的。
+>
+> ⚠️ 注意版本号与提交号并不同步：源码树在 `v2.0.8` 标签之后还有 47 个提交、
+> ReMe 在 `v0.4.1.12` 之后还有 19 个，而两边的包元数据仍报 `2.0.8` / `0.4.1.13`。
+> **真正要对齐的是提交号**（`5ff52f87` / `873bcee2`），不是标签。
 
 ### 6.2 PYTHONPATH 隔离旧版 ReMe（最容易翻车的一处）
 

@@ -1,0 +1,6 @@
+[submodule "third_party/agentscope"]
+	path = third_party/agentscope
+	url = https://github.com/agentscope-ai/agentscope.git
+[submodule "third_party/ReMe"]
+	path = third_party/ReMe
+	url = https://github.com/agentscope-ai/ReMe.git
